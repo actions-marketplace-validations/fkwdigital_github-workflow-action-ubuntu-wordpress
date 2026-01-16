@@ -18,7 +18,7 @@ inputs:
   REMOTE_PORT:
     description: "SSH port"
     default: "22"
-  TARGET:
+  REMOTE_PATH:
     description: "Absolute remote path (e.g., /var/www/html, /home/user/public_html)"
     required: true
   SOURCE:
