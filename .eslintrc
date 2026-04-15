@@ -4,20 +4,26 @@
     "es6": true,
     "node": true
   },
-  "extends": [
-    "airbnb-base"
-  ],
+  "extends": ["airbnb-base"],
   "globals": {
     "Atomics": "readonly",
     "SharedArrayBuffer": "readonly"
   },
   "parserOptions": {
-    "ecmaVersion": 2018
+    "ecmaVersion": 2020
   },
   "rules": {
-    "comma-dangle": [
+    "comma-dangle": ["error", "never"],
+    "indent": "off",
+    "operator-linebreak": "off",
+    "max-len": [
       "error",
-      "never"
+      {
+        "code": 120,
+        "ignoreUrls": true,
+        "ignoreStrings": true,
+        "ignoreTemplateLiterals": true
+      }
     ],
     "no-console": "off",
     "object-curly-newline": "off"
