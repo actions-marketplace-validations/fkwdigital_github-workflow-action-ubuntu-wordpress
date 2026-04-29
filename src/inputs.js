@@ -1,9 +1,8 @@
-const DEFAULT_ARGS = "-azvr --inplace --exclude='.*' --no-perms --no-times --delete-after";
+const DEFAULT_ARGS = "-azvr --inplace --exclude='.*' --no-perms --no-times";
 const DEFAULT_SOURCE = 'public/';
 
 function fromEnv(key, fallback = '') {
-  const has = Object.prototype.hasOwnProperty.call(process.env, key);
-  const v = has ? process.env[key] : process.env[`INPUT_${key}`];
+  const v = process.env[`INPUT_${key}`] ?? process.env[key];
   return v === undefined || v === null || v === '' ? fallback : v;
 }
 
@@ -17,6 +16,8 @@ function getInputs() {
     user: fromEnv('REMOTE_USER'),
     port: fromEnv('REMOTE_PORT', '22'),
     key: fromEnv('SSH_PRIVATE_KEY'),
+    passphrase: fromEnv('SSH_PASSPHRASE', ''),
+    knownHosts: fromEnv('KNOWN_HOSTS', ''),
     keyName: fromEnv('DEPLOY_KEY_NAME', 'deploy_key'),
     remotePath: fromEnv('REMOTE_PATH'),
     source: fromEnv('SOURCE', DEFAULT_SOURCE),

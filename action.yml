@@ -27,6 +27,12 @@ inputs:
   RSYNC_ARGS:
     description: "Rsync args (space separated)."
     default: "-azvr --inplace --exclude='.*' --no-perms --no-times"
+  SSH_PASSPHRASE:
+    description: "Passphrase for the SSH private key (required by some managed hosts)"
+    required: false
+  KNOWN_HOSTS:
+    description: "Contents of ~/.ssh/known_hosts for the remote server. Obtain via: ssh-keyscan -H your-host. Strongly recommended — omitting disables host key verification."
+    required: false
   ARGS:
     description: "(Alias) Same as RSYNC_ARGS for compatibility."
     required: false

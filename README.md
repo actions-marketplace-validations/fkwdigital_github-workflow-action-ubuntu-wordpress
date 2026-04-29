@@ -19,11 +19,36 @@ Rsync‑over‑SSH deploy with:
 
 ### Optional
 
+- `KNOWN_HOSTS` - Known hosts entry for the remote server. Strongly recommended — omitting disables host key verification. See [KNOWN_HOSTS](#known_hosts) below.
+- `SSH_PASSPHRASE` - Passphrase for the SSH private key (required by some managed hosts)
 - `REMOTE_PORT` - SSH port (default: `22`)
 - `SOURCE` - Local source directory to deploy (default: `public/`)
 - `ARGS` or `RSYNC_ARGS` - Custom rsync flags (default: `-azvr --inplace --exclude='.*' --no-perms --no-times --delete-after`)
 - `EXCLUDE_FILE` - Path to custom exclude file (completely replaces default excludes)
 - `EXTRA_EXCLUDE` - Comma-separated list of additional excludes (appends to default excludes)
+
+## KNOWN_HOSTS
+
+Without a `KNOWN_HOSTS` value the action connects with `StrictHostKeyChecking=no`, which disables host key verification and leaves the deploy vulnerable to MITM attacks. Setting this input enables `StrictHostKeyChecking=yes`.
+
+**Get the value from your server (run this once locally or in your CI setup):**
+
+```bash
+ssh-keyscan -H your-server-ip-or-hostname
+```
+
+Copy the output and store it as a GitHub secret, then pass it to the action:
+
+```yaml
+- name: Deploy to Server
+  uses: fkwdigital/github-workflow-action-ubuntu-wordpress@v1
+  with:
+    SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+    KNOWN_HOSTS: ${{ secrets.KNOWN_HOSTS }}
+    REMOTE_HOST: ${{ secrets.REMOTE_HOST }}
+    REMOTE_USER: ${{ secrets.REMOTE_USER }}
+    REMOTE_PATH: '/var/www/html'
+```
 
 ## Path Configuration
 
@@ -144,6 +169,7 @@ node_modules/
 ```
 
 ### WARNING!
+
 When specifying excludes, **be sure that the path matches exactly to the file you are looking to exclude**. Vague lines will create unintended consequences! For example, adding `index.php` will also exclude the `index.php` file in your theme folders. Use `/index.php` to specify the root index file only.
 
 ## Usage Examples
@@ -250,6 +276,21 @@ jobs:
     REMOTE_HOST: ${{ secrets.REMOTE_HOST }}
     REMOTE_USER: ${{ secrets.REMOTE_USER }}
     REMOTE_PORT: 2222
+    REMOTE_PATH: '/var/www/html'
+    SOURCE: './public/'
+```
+
+### Deploy with SSH Passphrase
+
+```yaml
+- name: Deploy with SSH Passphrase
+  uses: fkwdigital/github-workflow-action-ubuntu-wordpress@v1
+  with:
+    SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+    SSH_PASSPHRASE: ${{ secrets.SSH_PASSPHRASE }}
+    KNOWN_HOSTS: ${{ secrets.KNOWN_HOSTS }}
+    REMOTE_HOST: ${{ secrets.REMOTE_HOST }}
+    REMOTE_USER: ${{ secrets.REMOTE_USER }}
     REMOTE_PATH: '/var/www/html'
     SOURCE: './public/'
 ```

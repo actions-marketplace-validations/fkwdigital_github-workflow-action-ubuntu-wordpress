@@ -1,12 +1,56 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 const rsync = require('rsyncwrapper');
 const { sync: commandExists } = require('command-exists');
 
 const { getInputs, computeDest, assertRequired } = require('./inputs');
 const { ALWAYS_EXCLUDE } = require('./excludes');
+
+// path to the written key file — set in main(), scrubbed on exit
+let deployKeyPath = null;
+
+/**
+ * Delete the private key file on process exit.
+ */
+function cleanup() {
+  if (deployKeyPath) {
+    try {
+      fs.unlinkSync(deployKeyPath);
+    } catch (e) {
+      /* already gone */
+    }
+  }
+}
+process.on('exit', cleanup);
+
+/**
+ * Strip the passphrase from a private key file in-place so rsync can use it
+ * directly with -i. Uses spawn to avoid shell injection with special characters.
+ *
+ * @since 1.2.0
+ * @param {string} keyPath    - absolute path to the private key file
+ * @param {string} passphrase - current passphrase protecting the key
+ * @returns {Promise<void>}
+ */
+function removePassphrase(keyPath, passphrase) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn('ssh-keygen', ['-p', '-P', passphrase, '-N', '', '-f', keyPath]);
+    let stderr = '';
+    proc.stderr.on('data', (d) => {
+      stderr += d.toString();
+    });
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`ssh-keygen failed (exit ${code}): ${stderr}`));
+        return;
+      }
+      console.log('[SSH] Key unlocked for deployment');
+      resolve();
+    });
+  });
+}
 
 function ensureRsync() {
   return new Promise((resolve, reject) => {
@@ -24,7 +68,6 @@ function ensureRsync() {
   });
 }
 
-// Read an rsync --exclude-from file (if provided)
 function readExcludeFile(workspace, relPath) {
   if (!relPath) return [];
   const p = path.isAbsolute(relPath) ? relPath : path.join(workspace, relPath);
@@ -57,18 +100,29 @@ function addSshKey(key, name) {
   return filePath;
 }
 
+/**
+ * Append known_hosts content to ~/.ssh/known_hosts so ssh can verify the
+ * remote host fingerprint. Obtain the value via: ssh-keyscan -H <host>
+ *
+ * @since 1.1.0
+ * @param {string} knownHosts - raw known_hosts lines from ssh-keyscan
+ * @param {string} sshDir     - absolute path to the .ssh directory
+ * @returns {void}
+ */
+function writeKnownHosts(knownHosts, sshDir) {
+  const knownHostsPath = path.join(sshDir, 'known_hosts');
+  const entry = knownHosts.endsWith('\n') ? knownHosts : `${knownHosts}\n`;
+  fs.appendFileSync(knownHostsPath, entry, { encoding: 'utf8', mode: 0o600 });
+  console.log('[SSH] known_hosts written — strict host key verification enabled');
+}
+
 async function main() {
   const cfg = getInputs();
   assertRequired(cfg);
 
   const workspace = process.env.GITHUB_WORKSPACE || process.cwd();
   const remoteDest = `${cfg.user}@${cfg.host}:${computeDest(cfg)}`;
-  const localSrc = path.posix.join(
-    workspace,
-    cfg.source.endsWith('/') ? cfg.source : `${cfg.source}/`
-  );
-
-  // Merge excludes: always-on + file + extra (lint-friendly)
+  const localSrc = `${path.posix.join(workspace, cfg.source)}/`;
   const fileEx = readExcludeFile(workspace, cfg.excludeFile);
   const extra = (cfg.extraExclude || '')
     .split(',')
@@ -81,38 +135,53 @@ async function main() {
   console.log(`[deploy] Rsync → ${cfg.rsyncArgs}`);
   console.log(`[deploy] Excludes → ${EXCLUDES.length}`);
 
-  const keyPath = addSshKey(cfg.key, cfg.keyName);
   const home = process.env.HOME || os.homedir();
-  validateDir(path.join(home, '.ssh'));
-  validateFile(path.join(home, '.ssh', 'known_hosts'));
+  const sshDir = path.join(home, '.ssh');
+
+  const keyPath = addSshKey(cfg.key, cfg.keyName);
+  deployKeyPath = keyPath;
+
+  if (cfg.knownHosts) {
+    writeKnownHosts(cfg.knownHosts, sshDir);
+  } else {
+    console.warn(
+      '⚠️  [SSH] KNOWN_HOSTS is not set — host key verification is disabled.' +
+        ' Set KNOWN_HOSTS (via ssh-keyscan -H <host>) to protect against MITM attacks.'
+    );
+  }
+
+  const strictHostChecking = cfg.knownHosts ? 'yes' : 'no';
+
+  if (cfg.passphrase) {
+    await removePassphrase(keyPath, cfg.passphrase);
+  }
 
   await ensureRsync();
 
-  rsync(
-    {
-      src: localSrc,
-      dest: remoteDest,
-      args: splitArgsPreserveQuotes(cfg.rsyncArgs),
-      privateKey: keyPath,
-      port: cfg.port,
-      excludeFirst: EXCLUDES,
-      ssh: true,
-      sshCmdArgs: ['-o', 'StrictHostKeyChecking=no'],
-      recursive: true
-    },
-    (error, stdout, stderr, cmd) => {
-      if (error) {
-        console.error('⚠️  [rsync] error:', error.message);
-        console.error('stderr:', stderr || '');
-        console.error('cmd:', cmd || '');
-        process.abort();
-        return;
-      }
-      console.log('✅ [rsync] completed');
-      if (stdout) console.log(stdout);
-      process.exit(0);
+  const rsyncOpts = {
+    src: localSrc,
+    dest: remoteDest,
+    args: splitArgsPreserveQuotes(cfg.rsyncArgs),
+    port: cfg.port,
+    excludeFirst: EXCLUDES,
+    ssh: true,
+    sshCmdArgs: ['-o', `StrictHostKeyChecking=${strictHostChecking}`],
+    recursive: true,
+    privateKey: keyPath
+  };
+
+  rsync(rsyncOpts, (error, stdout, stderr, cmd) => {
+    if (error) {
+      console.error('⚠️  [rsync] error:', error.message);
+      console.error('stderr:', stderr || '');
+      console.error('cmd:', cmd || '');
+      process.exit(1);
+      return;
     }
-  );
+    console.log('✅ [rsync] completed');
+    if (stdout) console.log(stdout);
+    process.exit(0);
+  });
 }
 
 main();
