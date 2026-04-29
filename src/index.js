@@ -1,7 +1,7 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 const rsync = require('rsyncwrapper');
 const { sync: commandExists } = require('command-exists');
 
@@ -12,17 +12,9 @@ const { ALWAYS_EXCLUDE } = require('./excludes');
 let deployKeyPath = null;
 
 /**
- * Kill ssh-agent and delete the private key file on process exit.
+ * Delete the private key file on process exit.
  */
 function cleanup() {
-  const pid = process.env.SSH_AGENT_PID;
-  if (pid) {
-    try {
-      process.kill(parseInt(pid, 10));
-    } catch (e) {
-      /* already gone */
-    }
-  }
   if (deployKeyPath) {
     try {
       fs.unlinkSync(deployKeyPath);
@@ -34,62 +26,28 @@ function cleanup() {
 process.on('exit', cleanup);
 
 /**
- * Start ssh-agent, add a passphrase-protected key, and set
- * SSH_AUTH_SOCK / SSH_AGENT_PID in the current process env
- * so child processes (rsync → ssh) inherit it automatically.
+ * Strip the passphrase from a private key file in-place so rsync can use it
+ * directly with -i. Uses spawn to avoid shell injection with special characters.
+ *
+ * @since 1.2.0
+ * @param {string} keyPath    - absolute path to the private key file
+ * @param {string} passphrase - current passphrase protecting the key
+ * @returns {Promise<void>}
  */
-function startSshAgent(keyPath, passphrase) {
+function removePassphrase(keyPath, passphrase) {
   return new Promise((resolve, reject) => {
-    exec('ssh-agent -s', (err, stdout) => {
-      if (err) {
-        return reject(new Error(`ssh-agent start failed: ${err.message}`));
+    const proc = spawn('ssh-keygen', ['-p', '-P', passphrase, '-N', '', '-f', keyPath]);
+    let stderr = '';
+    proc.stderr.on('data', (d) => {
+      stderr += d.toString();
+    });
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`ssh-keygen failed (exit ${code}): ${stderr}`));
+        return;
       }
-
-      const [, authSock] = stdout.match(/SSH_AUTH_SOCK=([^;]+)/) || [];
-      const [, agentPid] = stdout.match(/SSH_AGENT_PID=(\d+)/) || [];
-
-      if (!authSock) {
-        return reject(new Error('Failed to parse SSH_AUTH_SOCK from ssh-agent output'));
-      }
-
-      process.env.SSH_AUTH_SOCK = authSock;
-      if (agentPid) {
-        process.env.SSH_AGENT_PID = agentPid;
-      }
-
-      const ppFile = path.join(os.tmpdir(), `pp_${process.pid}`);
-      const askpass = path.join(os.tmpdir(), `askpass_${process.pid}.sh`);
-
-      fs.writeFileSync(ppFile, passphrase, { mode: 0o600 });
-      fs.writeFileSync(askpass, `#!/bin/sh\ncat "${ppFile}"\n`, { mode: 0o700 });
-
-      const addEnv = {
-        ...process.env,
-        SSH_ASKPASS: askpass,
-        SSH_ASKPASS_REQUIRE: 'force',
-        DISPLAY: ':0'
-      };
-
-      return exec(`ssh-add "${keyPath}"`, { env: addEnv }, (addErr, _, addStderr) => {
-        try {
-          fs.unlinkSync(ppFile);
-        } catch (e) {
-          /* ignore */
-        }
-        try {
-          fs.unlinkSync(askpass);
-        } catch (e) {
-          /* ignore */
-        }
-
-        if (addErr) {
-          reject(new Error(`ssh-add failed: ${addErr.message}\n${addStderr || ''}`));
-          return;
-        }
-
-        console.log('✅ [SSH] Key added to ssh-agent');
-        resolve();
-      });
+      console.log('[SSH] Key unlocked for deployment');
+      resolve();
     });
   });
 }
@@ -193,11 +151,9 @@ async function main() {
   }
 
   const strictHostChecking = cfg.knownHosts ? 'yes' : 'no';
-  const useAgent = !!cfg.passphrase;
 
-  if (useAgent) {
-    await startSshAgent(keyPath, cfg.passphrase);
-    console.log('[deploy] Using ssh-agent (passphrase-protected key)');
+  if (cfg.passphrase) {
+    await removePassphrase(keyPath, cfg.passphrase);
   }
 
   await ensureRsync();
@@ -210,12 +166,9 @@ async function main() {
     excludeFirst: EXCLUDES,
     ssh: true,
     sshCmdArgs: ['-o', `StrictHostKeyChecking=${strictHostChecking}`],
-    recursive: true
+    recursive: true,
+    privateKey: keyPath
   };
-
-  if (!useAgent) {
-    rsyncOpts.privateKey = keyPath;
-  }
 
   rsync(rsyncOpts, (error, stdout, stderr, cmd) => {
     if (error) {
